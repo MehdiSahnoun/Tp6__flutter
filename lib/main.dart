@@ -27,9 +27,10 @@ void main() async {
     print('Failed to sign in anonymously: $e');
   }
 
+  final queueProvider = QueueProvider();
   runApp(
-    ChangeNotifierProvider(
-      create: (context) => QueueProvider(),
+    ChangeNotifierProvider.value(
+      value: queueProvider,
       child: const WaitingRoomApp(),
     ),
   );
@@ -113,18 +114,24 @@ class WaitingRoomScreen extends StatelessWidget {
                     itemCount: provider.clients.length,
                     itemBuilder: (context, index) {
                       final client = provider.clients[index];
+                      final lat = client['lat'];
+                      final lng = client['lng'];
+                      final locationText = lat == null || lng == null
+                          ? '📍 Location not captured'
+                          : '📍 ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
+
                       return Card(
                         margin: const EdgeInsets.symmetric(vertical: 4),
                         child: ListTile(
-                          title: Text(client.name),
+                          title: Text(client['name'] as String),
                           subtitle: Text(
-                            client.createdAt.toString().split(' ')[0],
+                            locationText,
                             style: const TextStyle(fontSize: 12, color: Colors.grey),
                           ),
                           trailing: IconButton(
                             icon: const Icon(Icons.delete, color: Colors.red),
                             onPressed: () {
-                              context.read<QueueProvider>().removeClient(client.id);
+                              context.read<QueueProvider>().removeClient(client['id'] as String);
                             },
                           ),
                         ),
