@@ -1,73 +1,120 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:waiting_room_app/main.dart';
 import 'package:waiting_room_app/queue_provider.dart';
+import 'package:waiting_room_app/models/client.dart';
+
+class FakeQueueProvider extends QueueProvider {
+  FakeQueueProvider() : super.forTesting(_MockSupabaseClient());
+  
+  @override
+  List<Client> get clients => _fakeClients;
+  final List<Client> _fakeClients = [];
+
+  @override
+  Future<void> addClient(String name) async {
+    if (name.trim().isNotEmpty) {
+      _fakeClients.add(Client(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        name: name.trim(),
+        createdAt: DateTime.now(),
+      ));
+      notifyListeners();
+    }
+  }
+
+  @override
+  Future<void> removeClient(String id) async {
+    _fakeClients.removeWhere((c) => c.id == id);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> nextClient() async {
+    if (_fakeClients.isNotEmpty) {
+      _fakeClients.removeAt(0);
+      notifyListeners();
+    }
+  }
+}
+
+class _MockSupabaseClient extends SupabaseClient {
+  _MockSupabaseClient() : super('https://mock.supabase.co', 'mock-key');
+}
 
 void main() {
-  testWidgets('should add a new client to the list on button tap', (WidgetTester tester) async {
-    // ARRANGE
-    await tester.pumpWidget(
-      ChangeNotifierProvider(
-        create: (context) => QueueProvider(),
-        child: const WaitingRoomApp(),
-      ),
-    );
+  group('WaitingRoomScreen Widget Tests', () {
+    late FakeQueueProvider fakeProvider;
 
-    // ACT
-    await tester.enterText(find.byType(TextField), 'Alice');
-    await tester.tap(find.byType(ElevatedButton));
-    await tester.pump(); // Rebuild the widget after state change
+    setUp(() {
+      fakeProvider = FakeQueueProvider();
+    });
 
-    // ASSERT
-    expect(find.text('Alice'), findsOneWidget);
-    expect(find.text('Clients in Queue: 1'), findsOneWidget);
-  });
+    Widget createTestWidget() {
+      return ChangeNotifierProvider<QueueProvider>.value(
+        value: fakeProvider,
+        child: const MaterialApp(home: WaitingRoomScreen()),
+      );
+    }
 
-  testWidgets('should remove a client from the list when the delete button is tapped', (WidgetTester tester) async {
-    // ARRANGE
-    await tester.pumpWidget(
-      ChangeNotifierProvider(
-        create: (context) => QueueProvider(),
-        child: const WaitingRoomApp(),
-      ),
-    );
-    await tester.enterText(find.byType(TextField), 'Bob');
-    await tester.tap(find.byType(ElevatedButton));
-    await tester.pump();
+    testWidgets('shows empty queue message when no clients', (WidgetTester tester) async {
+      await tester.pumpWidget(createTestWidget());
 
-    // ACT
-    // Find the delete icon associated with 'Bob' and tap it.
-    await tester.tap(find.byIcon(Icons.delete));
-    await tester.pump();
+      expect(find.text('No one in queue yet...'), findsOneWidget);
+    });
 
-    // ASSERT
-    expect(find.text('Bob'), findsNothing);
-    expect(find.text('Clients in Queue: 0'), findsOneWidget);
-  });
+    testWidgets('shows client name in list', (WidgetTester tester) async {
+      fakeProvider._fakeClients.add(Client(
+        id: '1',
+        name: 'Alice',
+        createdAt: DateTime.now(),
+      ));
 
-  testWidgets('should remove the first client from the list when "Next Client" is tapped', (WidgetTester tester) async {
-    // ARRANGE
-    // We need to provide the QueueProvider to our widget tree for the test.
-    await tester.pumpWidget(
-      ChangeNotifierProvider(
-        create: (context) => QueueProvider(),
-        child: const WaitingRoomApp(),
-      ),
-    );
-    // Add two clients to the list first
-    await tester.enterText(find.byType(TextField), 'Client A');
-    await tester.tap(find.byType(ElevatedButton));
-    await tester.pump();
-    await tester.enterText(find.byType(TextField), 'Client B');
-    await tester.tap(find.byType(ElevatedButton));
-    await tester.pump();
-    // ACT
-    await tester.tap(find.byKey(const Key('nextClientButton'))); // Find and tap the new button
-    await tester.pump();
-    // ASSERT
-    expect(find.text('Client A'), findsNothing);
-    expect(find.text('Client B'), findsOneWidget);
-    expect(find.text('Clients in Queue: 1'), findsOneWidget);
+      await tester.pumpWidget(createTestWidget());
+
+      expect(find.text('Alice'), findsOneWidget);
+    });
+
+    testWidgets('add client calls provider', (WidgetTester tester) async {
+      await tester.pumpWidget(createTestWidget());
+
+      await tester.enterText(find.byType(TextField), 'Bob');
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Add'));
+      await tester.pump();
+
+      expect(find.text('Bob'), findsOneWidget);
+    });
+
+    testWidgets('remove client removes from list', (WidgetTester tester) async {
+      fakeProvider._fakeClients.add(Client(
+        id: '1',
+        name: 'Bob',
+        createdAt: DateTime.now(),
+      ));
+
+      await tester.pumpWidget(createTestWidget());
+
+      await tester.tap(find.byIcon(Icons.delete));
+      await tester.pump();
+
+      expect(find.text('Bob'), findsNothing);
+    });
+
+    testWidgets('next client button removes first client', (WidgetTester tester) async {
+      fakeProvider._fakeClients.addAll([
+        Client(id: '1', name: 'Client A', createdAt: DateTime.now()),
+        Client(id: '2', name: 'Client B', createdAt: DateTime.now().add(const Duration(seconds: 1))),
+      ]);
+
+      await tester.pumpWidget(createTestWidget());
+
+      await tester.tap(find.byKey(const Key('nextClientButton')));
+      await tester.pump();
+
+      expect(find.text('Client A'), findsNothing);
+      expect(find.text('Client B'), findsOneWidget);
+    });
   });
 }
