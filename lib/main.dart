@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -31,15 +32,9 @@ void main() async {
     anonKey: supabaseAnonKey,
   );
 
-  try {
-    await Supabase.instance.client.auth.signInAnonymously();
-  } catch (e) {
-    print('Failed to sign in anonymously: $e');
-  }
-
   final supabaseClient = Supabase.instance.client;
   final repository = QueueRepository(supabaseClient);
-  final syncService = SyncService(LocalQueueStorage(), repository);
+  final syncService = kIsWeb ? null : SyncService(LocalQueueStorage(), repository);
   final queueProvider = QueueProvider(
     repository,
     GeolocationService(),

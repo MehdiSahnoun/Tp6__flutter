@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/client.dart';
 import '../models/sync_status.dart';
@@ -5,12 +6,12 @@ import '../storage/local_queue_storage.dart';
 
 class QueueRepository {
   final SupabaseClient _supabase;
-  final LocalQueueStorage _localStorage;
+  final LocalQueueStorage? _localStorage;
 
   QueueRepository(
     this._supabase, {
     LocalQueueStorage? localStorage,
-  }) : _localStorage = localStorage ?? LocalQueueStorage();
+  }) : _localStorage = kIsWeb ? null : (localStorage ?? LocalQueueStorage());
 
   /// Register a client on the server using the RPC function
   Future<void> registerOnServer(Client client) async {
@@ -43,25 +44,29 @@ class QueueRepository {
         .toList();
   }
 
-  /// Save a client locally (for offline support)
+  /// Save a client locally (for offline support) - no-op on web
   Future<void> saveClientLocally(Client client) async {
+    if (_localStorage == null) return;
     await _localStorage.saveClient(client.toLocalMap());
   }
 
   /// Get all clients from local storage
   Future<List<Client>> getClientsLocally() async {
+    if (_localStorage == null) return [];
     final records = await _localStorage.getClients();
     return records.map((r) => Client.fromLocalMap(r)).toList();
   }
 
   /// Get pending clients from local storage
   Future<List<Client>> getPendingClientsLocally() async {
+    if (_localStorage == null) return [];
     final records = await _localStorage.getPendingClients();
     return records.map((r) => Client.fromLocalMap(r)).toList();
   }
 
   /// Update sync status of a client locally
   Future<void> updateLocalSyncStatus(String id, SyncStatus status) async {
+    if (_localStorage == null) return;
     await _localStorage.updateSyncStatus(id, status);
   }
 
@@ -72,10 +77,12 @@ class QueueRepository {
     } catch (_) {
       // Ignore remote deletion errors
     }
-    await _localStorage.updateSyncStatus(id, SyncStatus.synced);
+    if (_localStorage != null) {
+      await _localStorage.updateSyncStatus(id, SyncStatus.synced);
+    }
   }
 
   void dispose() {
-    _localStorage.close();
+    _localStorage?.close();
   }
 }
