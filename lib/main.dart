@@ -1,16 +1,28 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:waiting_room_app/queue_provider.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+
+import 'models/app_connectivity.dart';
+import 'models/client.dart';
+import 'models/queue_state.dart';
+import 'providers/queue_provider.dart';
+import 'providers/connectivity_provider.dart';
+import 'services/connectivity_service.dart';
+import 'services/geolocation_service.dart';
+import 'services/sync_service.dart';
+import 'repositories/queue_repository.dart';
+import 'storage/local_queue_storage.dart';
+import 'widgets/offline_banner.dart';
+import 'widgets/client_card.dart';
+import 'widgets/loading_widget.dart';
+import 'widgets/queue_empty_widget.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Load .env file
   await dotenv.load(fileName: ".env");
 
-  // Initialize Supabase with environment variables
   final supabaseUrl = dotenv.env['SUPABASE_URL']!;
   final supabaseAnonKey = dotenv.env['SUPABASE_ANON_KEY']!;
 
@@ -19,18 +31,30 @@ void main() async {
     anonKey: supabaseAnonKey,
   );
 
-  // Sign in anonymously
   try {
-    final authResponse = await Supabase.instance.client.auth.signInAnonymously();
-    print('Signed in anonymously as user: ${authResponse.user?.id}');
+    await Supabase.instance.client.auth.signInAnonymously();
   } catch (e) {
     print('Failed to sign in anonymously: $e');
   }
 
-  final queueProvider = QueueProvider();
+  final supabaseClient = Supabase.instance.client;
+  final repository = QueueRepository(supabaseClient);
+  final syncService = SyncService(LocalQueueStorage(), repository);
+  final queueProvider = QueueProvider(
+    repository,
+    GeolocationService(),
+    syncService: syncService,
+  );
+  final connectivityProvider = ConnectivityProvider(
+    ConnectivityService(supabaseClient),
+  );
+
   runApp(
-    ChangeNotifierProvider.value(
-      value: queueProvider,
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: queueProvider),
+        ChangeNotifierProvider.value(value: connectivityProvider),
+      ],
       child: const WaitingRoomApp(),
     ),
   );
@@ -49,13 +73,35 @@ class WaitingRoomApp extends StatelessWidget {
   }
 }
 
-class WaitingRoomScreen extends StatelessWidget {
+class WaitingRoomScreen extends StatefulWidget {
   const WaitingRoomScreen({super.key});
 
   @override
+  State<WaitingRoomScreen> createState() => _WaitingRoomScreenState();
+}
+
+class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<QueueProvider>().initialize();
+      context.read<ConnectivityProvider>().initialize();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final connectivity = context.watch<ConnectivityProvider>();
     final queueProvider = context.watch<QueueProvider>();
-    final TextEditingController controller = TextEditingController();
 
     return Scaffold(
       appBar: AppBar(
@@ -65,96 +111,102 @@ class WaitingRoomScreen extends StatelessWidget {
           IconButton(
             key: const Key('nextClientButton'),
             icon: const Icon(Icons.skip_next),
-            onPressed: () {
-              context.read<QueueProvider>().nextClient();
-            },
+            onPressed: queueProvider.state == QueueState.loading
+                ? null
+                : () => context.read<QueueProvider>().nextClient(),
             tooltip: 'Next Client',
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            // Input Field
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: controller,
-                    decoration: const InputDecoration(hintText: 'Enter name'),
-                    onSubmitted: (name) {
-                      context.read<QueueProvider>().addClient(name);
-                      controller.clear();
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: () {
-                    if (controller.text.isNotEmpty) {
-                      context.read<QueueProvider>().addClient(controller.text);
-                      controller.clear();
-                    }
-                  },
-                  child: const Text('Add'),
-                ),
-              ],
+      body: Column(
+        children: [
+          OfflineBanner(status: connectivity.status),
+          Expanded(
+            child: _buildQueueBody(queueProvider),
+          ),
+        ],
+      ),
+      floatingActionButton: queueProvider.state == QueueState.loading ||
+              queueProvider.state == QueueState.refreshing
+          ? null
+          : FloatingActionButton(
+              onPressed: _showAddClientDialog,
+              child: const Icon(Icons.person_add),
             ),
-            const SizedBox(height: 20),
-            // Queue List
-            Expanded(
-              child: Consumer<QueueProvider>(
-                builder: (context, provider, _) {
-                  if (provider.clients.isEmpty) {
-                    return const Center(child: Text('No one in queue yet...'));
-                  }
+    );
+  }
 
-                  return ListView.builder(
-                    itemCount: provider.clients.length,
-                    itemBuilder: (context, index) {
-                      final client = provider.clients[index];
-                      final lat = client['lat'];
-                      final lng = client['lng'];
-                      final locationText = lat == null || lng == null
-                          ? '📍 Location not captured'
-                          : '📍 ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
+  Widget _buildQueueBody(QueueProvider provider) {
+    switch (provider.state) {
+      case QueueState.initial:
+      case QueueState.loading:
+        return const LoadingWidget(message: 'Loading queue...');
+      case QueueState.error:
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, size: 64, color: Colors.red),
+              const SizedBox(height: 12),
+              Text(
+                provider.errorMessage ?? 'An error occurred',
+                style: const TextStyle(color: Colors.red),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: provider.refreshQueue,
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        );
+      case QueueState.empty:
+        return const QueueEmptyWidget();
+      case QueueState.loaded:
+      case QueueState.refreshing:
+      case QueueState.loadingMore:
+        if (provider.clients.isEmpty) {
+          return const QueueEmptyWidget();
+        }
+        return ListView.builder(
+          itemCount: provider.clients.length +
+              (provider.state == QueueState.loadingMore ? 1 : 0),
+          itemBuilder: (context, index) {
+            if (index == provider.clients.length) {
+              return const LoadingWidget(message: 'Loading more...');
+            }
+            final client = provider.clients[index];
+            return ClientCard(client: client);
+          },
+          padding: const EdgeInsets.symmetric(vertical: 8),
+        );
+    }
+  }
 
-                      return Card(
-                        margin: const EdgeInsets.symmetric(vertical: 4),
-                        child: ListTile(
-                          title: Text(client['name'] as String),
-                          subtitle: Text(
-                            locationText,
-                            style: const TextStyle(fontSize: 12, color: Colors.grey),
-                          ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () {
-                              context.read<QueueProvider>().removeClient(client['id'] as String);
-                            },
-                          ),
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-            // Next Button
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: () {
-                context.read<QueueProvider>().nextClient();
-              },
-              icon: const Icon(Icons.arrow_forward),
-              label: const Text('Next Client'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.green,
-              ),
-            ),
-          ],
+  void _showAddClientDialog() {
+    _controller.clear();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add to Queue'),
+        content: TextField(
+          controller: _controller,
+          autofocus: true,
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              final name = _controller.text;
+              Navigator.pop(context);
+              context.read<QueueProvider>().addClient(name);
+            },
+            child: const Text('Add'),
+          ),
+        ],
       ),
     );
   }

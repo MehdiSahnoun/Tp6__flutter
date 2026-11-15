@@ -67,6 +67,6 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>This app uses your location to tag where you joined the waiting room.</string>
+	<string>Location is used to provide optional location context for registration.</string>
 </dict>
 </plist>
